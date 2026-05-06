@@ -1,1 +1,607 @@
-ffff
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  Search, Plus, LayoutGrid, List, Tag, Filter, TrendingUp, Box, 
+  Heart, Clock, MoreVertical, ChevronRight, Settings, ShieldCheck, 
+  Package, Calendar, DollarSign, Gamepad2, Swords, Gem, Trophy,
+  LogOut, Trash2, ImagePlus
+} from 'lucide-react';
+
+// === Firebase 相關引入 ===
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
+import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc } from "firebase/firestore";
+
+// === Firebase 初始化設定 ===
+const firebaseConfig = {
+  apiKey: "AIzaSyBiBHaVqe-pvGp_0ReI9FY-A1AMhrWkqNY",
+  authDomain: "colletor-c80dc.firebaseapp.com",
+  projectId: "colletor-c80dc",
+  storageBucket: "colletor-c80dc.firebasestorage.app",
+  messagingSenderId: "192990891941",
+  appId: "1:192990891941:web:355237ab54607fbc09624c"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+// 為了相容沙盒環境，使用動態或預設 appId
+const currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'colletor-app';
+
+// 固定分類數據
+const INITIAL_COLLECTIONS = [
+  { id: 1, name: 'MMORPG 神兵', category: '遊戲道具', color: 'bg-red-500', icon: 'Swords' },
+  { id: 2, name: 'FPS 稀有槍皮', category: '射擊遊戲', color: 'bg-emerald-500', icon: 'Gamepad2' },
+  { id: 3, name: 'NFT 加密資產', category: '數位藝術', color: 'bg-purple-500', icon: 'Gem' },
+  { id: 4, name: '電競冠軍造型', category: 'MOBA', color: 'bg-blue-500', icon: 'Trophy' },
+];
+
+const App = () => {
+  // === 狀態管理 ===
+  const [user, setUser] = useState(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  
+  const [items, setItems] = useState([]);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCollection, setSelectedCollection] = useState(null);
+  const [viewMode, setViewMode] = useState('grid');
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  
+  // 新增虛寶的表單狀態
+  const [newItem, setNewItem] = useState({
+    name: '',
+    collectionId: 1,
+    price: '',
+    status: '傳說',
+    image: ''
+  });
+
+  // === Firebase 認證監聽 ===
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // === Firebase 資料庫監聽 (取得使用者專屬虛寶) ===
+  useEffect(() => {
+    if (!user) {
+      setItems([]);
+      return;
+    }
+    // 嚴格遵守路徑規則：artifacts/{appId}/users/{userId}/{collectionName}
+    const itemsRef = collection(db, 'artifacts', currentAppId, 'users', user.uid, 'items');
+    
+    // 即時監聽資料變更
+    const unsubscribe = onSnapshot(itemsRef, (snapshot) => {
+      const fetchedItems = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      // 根據建立時間排序 (最新的在前)
+      fetchedItems.sort((a, b) => b.createdAt - a.createdAt);
+      setItems(fetchedItems);
+    }, (error) => {
+      console.error("讀取虛寶庫失敗:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // === 功能函式 ===
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("登入失敗:", error);
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  // 處理圖片選擇並轉換為 Base64 (包含壓縮防超限)
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 600; // 壓縮尺寸避免超過 Firestore 1MB 限制
+        const MAX_HEIGHT = 600;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height && width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        } else if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // 轉換為 Base64 格式
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+        setNewItem(prev => ({ ...prev, image: compressedBase64 }));
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 儲存至 Firestore
+  const handleAddItem = async () => {
+    if (!user || !newItem.name || !newItem.image) return;
+    
+    try {
+      const itemsRef = collection(db, 'artifacts', currentAppId, 'users', user.uid, 'items');
+      await addDoc(itemsRef, {
+        ...newItem,
+        collectionId: Number(newItem.collectionId),
+        date: new Date().toISOString().split('T')[0],
+        tags: ['玩家自訂'],
+        rating: 5,
+        createdAt: new Date().getTime()
+      });
+      
+      // 重置表單與關閉 Modal
+      setNewItem({ name: '', collectionId: 1, price: '', status: '傳說', image: '' });
+      setIsAddModalOpen(false);
+    } catch (error) {
+      console.error("新增虛寶失敗:", error);
+    }
+  };
+
+  // 刪除虛寶
+  const handleDeleteItem = async (id) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', currentAppId, 'users', user.uid, 'items', id));
+    } catch (error) {
+      console.error("刪除失敗:", error);
+    }
+  };
+
+  // 過濾邏輯 (在前端記憶體中過濾，符合不使用複雜查詢的規則)
+  const filteredItems = useMemo(() => {
+    let currentItems = selectedCollection 
+      ? items.filter(item => item.collectionId === selectedCollection.id)
+      : items;
+    
+    if (searchQuery) {
+      currentItems = currentItems.filter(item => 
+        item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (item.tags && item.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase())))
+      );
+    }
+    return currentItems;
+  }, [selectedCollection, searchQuery, items]);
+
+  // === 畫面渲染 ===
+
+  // 載入中畫面
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-pulse flex flex-col items-center">
+          <Gamepad2 size={48} className="text-blue-600 mb-4" />
+          <p className="text-slate-500 font-medium">連線至虛寶金庫中...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 登入畫面
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-white max-w-md w-full rounded-3xl p-8 shadow-2xl text-center">
+          <div className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6 shadow-lg shadow-blue-500/30">
+            <Gamepad2 size={40} />
+          </div>
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">虛寶金庫</h1>
+          <p className="text-slate-500 mb-8">專為頂級玩家打造的數位資產展間</p>
+          
+          <button 
+            onClick={handleGoogleLogin}
+            className="w-full bg-white border-2 border-slate-200 hover:bg-slate-50 text-slate-700 font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-3 transition-colors"
+          >
+            <svg className="w-6 h-6" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+            </svg>
+            使用 Google 帳號登入
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 元件：側邊欄導航
+  const SidebarItem = ({ icon: Icon, label, id, active = false, onClick }) => (
+    <button
+      onClick={() => {
+        if (onClick) return onClick();
+        setActiveTab(id);
+        if (id === 'dashboard') setSelectedCollection(null);
+      }}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+        active 
+        ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' 
+        : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+      }`}
+    >
+      <Icon size={20} />
+      <span className="font-medium text-sm lg:block hidden">{label}</span>
+    </button>
+  );
+
+  return (
+    <div className="flex min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* 側邊導航欄 */}
+      <aside className="w-20 lg:w-64 border-r border-slate-200 bg-white flex flex-col p-4 sticky top-0 h-screen">
+        <div className="flex items-center gap-3 px-2 mb-10">
+          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-inner">
+            <Gamepad2 size={24} />
+          </div>
+          <span className="font-bold text-xl tracking-tight lg:block hidden">虛寶金庫</span>
+        </div>
+
+        <nav className="flex-1 space-y-2">
+          <SidebarItem icon={LayoutGrid} label="控制面板" id="dashboard" active={activeTab === 'dashboard'} />
+          <SidebarItem icon={Package} label="我的收藏" id="collections" active={activeTab === 'collections'} />
+          <SidebarItem icon={Heart} label="願望清單" id="wishlist" active={activeTab === 'wishlist'} />
+          <SidebarItem icon={TrendingUp} label="價值分析" id="analytics" active={activeTab === 'analytics'} />
+        </nav>
+
+        <div className="mt-auto space-y-2 border-t pt-4">
+          <SidebarItem icon={LogOut} label="登出帳號" onClick={handleLogout} />
+        </div>
+      </aside>
+
+      {/* 主要內容區 */}
+      <main className="flex-1 flex flex-col min-w-0">
+        {/* 頂部搜索與個人資料 */}
+        <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-10">
+          <div className="relative w-full max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input 
+              type="text" 
+              placeholder="搜尋虛寶、標籤或分類..."
+              className="w-full bg-slate-100 border-none rounded-2xl py-2.5 pl-10 pr-4 text-sm focus:ring-2 focus:ring-blue-500/20 transition-all outline-none"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-end mr-2 hidden sm:flex">
+              <span className="text-sm font-bold">{user.displayName || '高階玩家'}</span>
+              <span className="text-xs text-slate-400">{user.email}</span>
+            </div>
+            <div className="h-10 w-10 rounded-full bg-slate-200 border-2 border-white shadow-sm overflow-hidden">
+              <img src={user.photoURL || "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix"} alt="User" />
+            </div>
+          </div>
+        </header>
+
+        <div className="p-8 max-w-7xl mx-auto w-full">
+          {/* 控制面板概覽 */}
+          {!selectedCollection && activeTab === 'dashboard' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+              <div className="flex items-end justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-slate-900">歡迎回來，{user.displayName || '玩家'}</h1>
+                  <p className="text-slate-500 mt-1">目前您總共擁有 {items.length} 件珍稀虛寶。</p>
+                </div>
+                <button 
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl flex items-center gap-2 font-semibold shadow-lg shadow-blue-200 transition-all active:scale-95 whitespace-nowrap"
+                >
+                  <Plus size={20} />
+                  <span className="hidden sm:inline">登錄新虛寶</span>
+                </button>
+              </div>
+
+              {/* 分類網格 */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mt-8">
+                {INITIAL_COLLECTIONS.map((col) => {
+                  const count = items.filter(i => i.collectionId === col.id).length;
+                  return (
+                    <div 
+                      key={col.id}
+                      onClick={() => setSelectedCollection(col)}
+                      className="group bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer"
+                    >
+                      <div className={`h-24 ${col.color} relative overflow-hidden`}>
+                        <div className="absolute top-0 right-0 p-8 opacity-20 transform translate-x-4 -translate-y-4 group-hover:scale-110 transition-transform">
+                          <Gamepad2 size={80} />
+                        </div>
+                      </div>
+                      <div className="p-6 relative">
+                        <div className="absolute -top-10 left-6 w-14 h-14 bg-white rounded-2xl shadow-lg flex items-center justify-center text-slate-700">
+                          <Tag size={28} />
+                        </div>
+                        <div className="mt-4">
+                          <h3 className="font-bold text-lg group-hover:text-blue-600 transition-colors">{col.name}</h3>
+                          <p className="text-slate-400 text-sm mb-4">{col.category}</p>
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-slate-600 bg-slate-100 px-3 py-1 rounded-full">{count} 件裝備</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 特定收藏品清單 */}
+          {(selectedCollection || activeTab === 'collections') && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => setSelectedCollection(null)}
+                    className="p-2 hover:bg-slate-200 rounded-xl transition-colors"
+                  >
+                    <ChevronRight className="rotate-180" size={24} />
+                  </button>
+                  <div>
+                    <h1 className="text-2xl font-bold">{selectedCollection ? selectedCollection.name : '所有珍稀虛寶'}</h1>
+                    <nav className="flex text-xs text-slate-400 mt-1">
+                      <span>首頁</span>
+                      <span className="mx-2">/</span>
+                      <span className="text-blue-600">金庫庫存</span>
+                    </nav>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 bg-white p-1 rounded-2xl shadow-sm border border-slate-100 self-start md:self-auto">
+                  <button 
+                    onClick={() => setViewMode('grid')}
+                    className={`p-2 rounded-xl transition-all ${viewMode === 'grid' ? 'bg-blue-50 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <LayoutGrid size={20} />
+                  </button>
+                  <button 
+                    onClick={() => setViewMode('list')}
+                    className={`p-2 rounded-xl transition-all ${viewMode === 'list' ? 'bg-blue-50 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <List size={20} />
+                  </button>
+                </div>
+              </div>
+
+              {/* 商品展示區 */}
+              {viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {filteredItems.map((item) => (
+                    <div key={item.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden hover:shadow-lg transition-all group relative">
+                      <div className="relative h-48 overflow-hidden bg-slate-900 flex items-center justify-center">
+                        <img 
+                          src={item.image} 
+                          alt={item.name} 
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 opacity-90 group-hover:opacity-100"
+                        />
+                        <div className="absolute top-3 right-3 flex gap-2">
+                          <button 
+                            onClick={() => handleDeleteItem(item.id)}
+                            className="bg-black/50 hover:bg-rose-500 backdrop-blur text-white p-2 rounded-xl shadow-sm transition-colors"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                        <div className="absolute bottom-3 left-3 flex gap-1">
+                          <span className={`backdrop-blur text-white font-bold text-[10px] px-2 py-1 rounded-lg ${
+                              item.status === '傳說' ? 'bg-amber-500/80' : 
+                              item.status === '神話' ? 'bg-rose-500/80' :
+                              item.status === '史詩' ? 'bg-purple-500/80' :
+                              'bg-blue-500/80'
+                            }`}>
+                            {item.status}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="p-5">
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-bold text-slate-900 leading-tight truncate pr-4">{item.name}</h4>
+                        </div>
+                        <div className="flex justify-between items-center pt-4 border-t border-slate-50 mt-2">
+                          <div className="flex items-center gap-2 text-slate-400">
+                            <Calendar size={14} />
+                            <span className="text-xs">{item.date}</span>
+                          </div>
+                          <span className="font-bold text-blue-600 truncate max-w-[100px]">{item.price}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {/* 新增按鈕卡片 */}
+                  <button 
+                    onClick={() => setIsAddModalOpen(true)}
+                    className="border-2 border-dashed border-slate-200 rounded-3xl flex flex-col items-center justify-center p-8 text-slate-400 hover:border-blue-400 hover:text-blue-400 hover:bg-blue-50 transition-all group min-h-[280px]"
+                  >
+                    <div className="w-12 h-12 rounded-full border-2 border-dashed border-slate-300 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                      <Plus size={24} />
+                    </div>
+                    <span className="font-semibold">登錄新虛寶</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm overflow-x-auto">
+                  <table className="w-full text-left min-w-[600px]">
+                    <thead className="bg-slate-50 border-b border-slate-100">
+                      <tr>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">項目名稱</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">取得日期</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">稀有度</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">評估價值</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {filteredItems.length === 0 && (
+                        <tr><td colSpan="5" className="text-center py-8 text-slate-400">目前尚無收藏品</td></tr>
+                      )}
+                      {filteredItems.map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <img src={item.image} className="w-10 h-10 rounded-lg object-cover bg-slate-200" alt="" />
+                              <span className="font-semibold text-sm">{item.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-slate-500">{item.date}</td>
+                          <td className="px-6 py-4">
+                            <span className={`px-2 py-1 rounded-lg text-xs font-bold ${
+                              item.status === '傳說' ? 'bg-amber-100 text-amber-700' : 
+                              item.status === '神話' ? 'bg-rose-100 text-rose-700' :
+                              item.status === '史詩' ? 'bg-purple-100 text-purple-700' :
+                              'bg-blue-100 text-blue-700'
+                            }`}>
+                              {item.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 font-bold text-sm text-slate-700">{item.price}</td>
+                          <td className="px-6 py-4 text-right">
+                            <button onClick={() => handleDeleteItem(item.id)} className="p-2 text-slate-400 hover:text-rose-600 transition-colors rounded-lg hover:bg-rose-50">
+                              <Trash2 size={18} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* 新增/上傳 Modal */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsAddModalOpen(false)}></div>
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative animate-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h2 className="text-xl font-bold flex items-center gap-2"><Gamepad2 className="text-blue-600"/> 登錄新虛寶</h2>
+              <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-slate-900 p-1 rounded-lg hover:bg-slate-200 transition-colors">
+                <Plus className="rotate-45" size={24} />
+              </button>
+            </div>
+            
+            <div className="p-8 space-y-5 max-h-[80vh] overflow-y-auto">
+              {/* Base64 圖片上傳區 */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700 block">虛寶截圖</label>
+                <div className="relative">
+                  <input 
+                    type="file" 
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                  />
+                  <div className={`w-full h-40 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center overflow-hidden transition-colors ${newItem.image ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50 hover:border-blue-400'}`}>
+                    {newItem.image ? (
+                      <img src={newItem.image} alt="Preview" className="w-full h-full object-contain" />
+                    ) : (
+                      <>
+                        <ImagePlus size={32} className="text-slate-400 mb-2" />
+                        <span className="text-sm font-medium text-slate-500">點擊或拖曳上傳截圖</span>
+                        <span className="text-xs text-slate-400 mt-1">將自動轉換並壓縮為 Base64</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">虛寶名稱</label>
+                <input 
+                  type="text" 
+                  value={newItem.name}
+                  onChange={e => setNewItem({...newItem, name: e.target.value})}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/50 transition-shadow" 
+                  placeholder="例如：+15 毀滅之劍" 
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">遊戲/平台分類</label>
+                  <select 
+                    value={newItem.collectionId}
+                    onChange={e => setNewItem({...newItem, collectionId: e.target.value})}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/50"
+                  >
+                    {INITIAL_COLLECTIONS.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">稀有度</label>
+                  <select 
+                    value={newItem.status}
+                    onChange={e => setNewItem({...newItem, status: e.target.value})}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/50"
+                  >
+                    <option>神話</option>
+                    <option>傳說</option>
+                    <option>史詩</option>
+                    <option>精良</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">當前市值 (估價)</label>
+                <input 
+                  type="text" 
+                  value={newItem.price}
+                  onChange={e => setNewItem({...newItem, price: e.target.value})}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500/50" 
+                  placeholder="例如：NT$ 35,000 或 1.5 ETH" 
+                />
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <button 
+                  onClick={() => setIsAddModalOpen(false)} 
+                  className="flex-1 px-6 py-3 border-2 border-slate-200 text-slate-600 rounded-2xl font-bold hover:bg-slate-50 transition-colors"
+                >
+                  取消
+                </button>
+                <button 
+                  onClick={handleAddItem}
+                  disabled={!newItem.name || !newItem.image}
+                  className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-500/30 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  確認儲存
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
